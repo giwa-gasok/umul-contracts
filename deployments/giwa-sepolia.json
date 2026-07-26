@@ -1,0 +1,24 @@
+{
+  "network": "giwa-sepolia",
+  "chainId": 91342,
+  "contract": "ConversationEvidenceRegistry",
+  "address": "0x675dB91aCEC52DCb44e6d20FB1F1299FFafBb51B",
+  "transactionHash": "0x8f018ccbb711133dcc52958d50f472bf0c32bde970fec943d39e637d7db01da0",
+  "blockNumber": 31763659,
+  "compiler": "v0.8.35+commit.47b9dedd",
+  "verified": true,
+  "explorer": "https://sepolia-explorer.giwa.io/address/0x675dB91aCEC52DCb44e6d20FB1F1299FFafBb51B",
+  "constructorArguments": {
+    "dojangScrollAddress": "0xd5077b67dcb56caC8b270C7788FC3E6ee03F17B9",
+    "dojangAttesterId": "0xaa92f8c143657dde575de430aecaea6ca91f2e6072339b16932d426895d8d678"
+  },
+  "eip712Domain": {
+    "name": "GasokConversationEvidence",
+    "version": "1",
+    "chainId": 91342,
+    "verifyingContract": "0x675dB91aCEC52DCb44e6d20FB1F1299FFafBb51B",
+    "domainSeparator": "0xac004cd46d64cc86eb81eb179c9ff49cd5ea39625701b66d5357563a165328af"
+  },
+  "forkBaselineBlock": 31763461,
+  "notes": "forkBaselineBlock 은 wallet B 가 TESTNET_FAUCET attestation 을 받기 전 상태다. 해당 블록에서 A 만 Verified 이고 B, C 는 Unverified 다."
+}
