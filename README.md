@@ -3,7 +3,7 @@
 Umul(Gasok) 대화 증빙 컨트랙트. 참여자 전원이 EIP-712 로 서명한 대화 해시를
 GIWA Sepolia 에 기록한다. 대화 원문은 어디에도 저장하지 않는다.
 
-[giwa-gasok/gasok](https://github.com/giwa-gasok/gasok) 의 `contracts/` 를
+[giwa-gasok/umul-app](https://github.com/giwa-gasok/umul-app) 의 `contracts/` 를
 이력째 분리해 옮긴 저장소다. 앱과 문서는 원 저장소에 있다.
 
 ## 배포
@@ -30,7 +30,7 @@ GIWA Sepolia 에 기록한다. 대화 원문은 어디에도 저장하지 않는
 5. 각 서명이 digest 에서 해당 참여자 주소로 복구
 
 원리와 실제 트랜잭션 해부는 원 저장소의
-[증빙 컨트랙트 가이드](https://github.com/giwa-gasok/gasok/blob/main/docs/architecture/evidence-contract-guide.md)에
+[증빙 컨트랙트 가이드](https://github.com/giwa-gasok/umul-app/blob/main/docs/architecture/evidence-contract-guide.md)에
 있다.
 
 ## 개발
