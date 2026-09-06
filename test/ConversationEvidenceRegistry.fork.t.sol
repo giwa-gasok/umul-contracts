@@ -16,6 +16,8 @@ interface ForkVm {
 /// @dev BASELINE_BLOCK is the pre-attestation measurement: only wallet A holds a TESTNET_FAUCET
 ///      attestation. Wallet B is attested later in the plan, so this block preserves the mixed
 ///      state permanently even after B becomes verified on the live chain.
+///      Verification no longer gates recording, so this mixed state pins what ends up
+///      in the verification flags rather than who gets rejected.
 contract ConversationEvidenceRegistryForkTest {
     ForkVm private constant vm = ForkVm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
@@ -54,33 +56,37 @@ contract ConversationEvidenceRegistryForkTest {
         _assertFalse(dojang.isVerified(WALLET_C, UPBIT_KOREA_ATTESTER), "C must be unverified for UPBIT_KOREA");
     }
 
-    /// @notice A conversation containing the unverified wallet B is rejected on the real registry.
-    function test_recordEvidence_rejectsBaselineConversationContainingWalletB() public {
+    /// @notice A conversation containing the unverified wallet B now fails on the
+    ///         signature, not on verification.
+    /// @dev B's key is unavailable, so an empty signature stands in. This call used to
+    ///      revert with `ParticipantNotVerified` before reaching signature recovery.
+    function test_recordEvidence_baselineWalletBFailsOnSignatureNotVerification() public {
         address[] memory participants = new address[](2);
         participants[0] = WALLET_B;
         participants[1] = WALLET_A;
         // `_evidenceFor` calls the registry, so it must run before `expectRevert` arms the next call.
         ConversationEvidenceRegistry.Evidence memory evidence = _evidenceFor(participants);
 
-        vm.expectRevert(abi.encodeWithSelector(ConversationEvidenceRegistry.ParticipantNotVerified.selector, WALLET_B));
+        vm.expectRevert(abi.encodeWithSelector(ConversationEvidenceRegistry.InvalidSignature.selector, WALLET_B));
         registry.recordEvidence(evidence, participants, new bytes[](2));
     }
 
-    /// @notice The unverified wallet C is rejected in the three-participant group as well.
-    function test_recordEvidence_rejectsBaselineGroupContainingWalletC() public {
+    /// @notice The same holds for the unverified wallet C in the three-participant group.
+    function test_recordEvidence_baselineWalletCFailsOnSignatureNotVerification() public {
         address[] memory participants = new address[](3);
         participants[0] = WALLET_C;
         participants[1] = WALLET_B;
         participants[2] = WALLET_A;
         ConversationEvidenceRegistry.Evidence memory evidence = _evidenceFor(participants);
 
-        vm.expectRevert(abi.encodeWithSelector(ConversationEvidenceRegistry.ParticipantNotVerified.selector, WALLET_C));
+        vm.expectRevert(abi.encodeWithSelector(ConversationEvidenceRegistry.InvalidSignature.selector, WALLET_C));
         registry.recordEvidence(evidence, participants, new bytes[](3));
     }
 
-    /// @notice Dojang is checked against the live chain, not a mock, so a locally signed but
-    ///         unverified pair still fails on the real DojangScroll.
-    function test_recordEvidence_rejectsLocallySignedUnverifiedPair() public {
+    /// @notice Against the real DojangScroll rather than a mock, a pair that is
+    ///         unverified on both sides records as long as the signatures match.
+    ///         Both flags stay false.
+    function test_recordEvidence_recordsLocallySignedUnverifiedPair() public {
         uint256 firstKey = 0xA11CE;
         uint256 secondKey = 0xB0B;
         address firstSigner = vm.addr(firstKey);
@@ -89,6 +95,8 @@ contract ConversationEvidenceRegistryForkTest {
         address[] memory participants = new address[](2);
         (participants[0], participants[1]) =
             uint160(firstSigner) < uint160(secondSigner) ? (firstSigner, secondSigner) : (secondSigner, firstSigner);
+        _assertFalse(dojang.isVerified(participants[0], TESTNET_FAUCET_ATTESTER), "fixture signer must be unverified");
+        _assertFalse(dojang.isVerified(participants[1], TESTNET_FAUCET_ATTESTER), "fixture signer must be unverified");
 
         ConversationEvidenceRegistry.Evidence memory evidence = _evidenceFor(participants);
         bytes32 digest = registry.hashEvidence(evidence);
@@ -96,10 +104,12 @@ contract ConversationEvidenceRegistryForkTest {
         signatures[0] = _sign(participants[0] == firstSigner ? firstKey : secondKey, digest);
         signatures[1] = _sign(participants[1] == firstSigner ? firstKey : secondKey, digest);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(ConversationEvidenceRegistry.ParticipantNotVerified.selector, participants[0])
-        );
-        registry.recordEvidence(evidence, participants, signatures);
+        bytes32 evidenceId = registry.recordEvidence(evidence, participants, signatures);
+
+        _assertTrue(registry.evidenceExists(evidenceId), "unverified pair must be recorded");
+        bool[] memory verified = registry.getEvidence(evidenceId).participantsVerified;
+        _assertFalse(verified[0], "unverified participant flagged as verified");
+        _assertFalse(verified[1], "unverified participant flagged as verified");
     }
 
     function _evidenceFor(address[] memory participants)

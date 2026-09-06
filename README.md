@@ -18,6 +18,11 @@ GIWA Sepolia 에 기록한다. 대화 원문은 어디에도 저장하지 않는
 
 배포 산출물 전문은 `deployments/giwa-sepolia.json` 에 있다.
 
+> 위 주소에 올라간 코드는 참여자 전원의 Dojang 인증을 **강제하던** 버전이다.
+> 현재 `src/` 는 인증을 기록만 하고 막지 않으므로, 반영하려면 재배포해야 한다.
+> EIP-712 도메인에 컨트랙트 주소가 들어가므로 재배포하면 그전에 모아둔 서명은
+> 모두 무효가 된다.
+
 ## 동작
 
 `recordEvidence(evidence, participants, signatures)` 는 다음을 순서대로
@@ -26,8 +31,18 @@ GIWA Sepolia 에 기록한다. 대화 원문은 어디에도 저장하지 않는
 1. 참여자 2명 이상, 서명 개수 일치, 필드 형태 검사
 2. 참여자 배열이 오름차순이고 `participantsHash` 와 일치
 3. EIP-712 digest 계산, `evidenceId` 미사용 확인 (리플레이 차단)
-4. 참여자 전원 `DojangScroll.isVerified` 재확인
-5. 각 서명이 digest 에서 해당 참여자 주소로 복구
+4. 각 서명이 digest 에서 해당 참여자 주소로 복구
+
+## Dojang 인증
+
+인증은 증빙의 **조건이 아니라 속성**이다. 기록 시점에 참여자마다
+`DojangScroll.isVerified` 를 읽어 `participants` 와 같은 순서의 `bool[]` 로
+`EvidenceRecord.participantsVerified` 와 `EvidenceRecorded` 이벤트에 남긴다.
+미인증 지갑만으로 이루어진 대화도 서명이 맞으면 기록되고, 열람하는 쪽이
+플래그를 보고 증빙의 무게를 판단한다.
+
+스크롤 조회가 revert 하면 그 참여자는 미인증으로 읽는다. 조회 실패가 증빙
+기록을 막으면 인증이 다시 조건이 되어 버리기 때문이다.
 
 원리와 실제 트랜잭션 해부는 원 저장소의
 [증빙 컨트랙트 가이드](https://github.com/giwa-gasok/umul-app/blob/main/docs/architecture/evidence-contract-guide.md)에
@@ -58,4 +73,5 @@ GIWA_SEPOLIA_RPC_URL=https://sepolia-rpc.giwa.io \
 
 - P0 는 EOA 서명만 지원한다. EIP-1271 스마트 계정은 다음 단계다
 - attester 는 생성자에서 고정된다. 바꾸려면 재배포해야 한다
-- 서명 후 Dojang 인증이 철회되거나 만료되면 제출이 거부된다
+- 인증 플래그는 기록 시점의 스냅샷이다. 이후 attestation 이 철회되거나
+  만료돼도 기록된 `true` 는 그대로 남는다 (테스트넷 파우셋은 30일 만료)

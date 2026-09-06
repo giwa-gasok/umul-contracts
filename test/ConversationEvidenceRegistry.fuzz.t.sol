@@ -91,7 +91,8 @@ contract ConversationEvidenceRegistryFuzzTest {
         registry.recordEvidence(evidence, participants, signatures);
     }
 
-    function testFuzz_rejectsUnverifiedParticipantAtAnyIndex(
+    /// @notice An unverified participant at any index still records, false at that index only.
+    function testFuzz_recordsUnverifiedParticipantAtAnyIndex(
         uint8 countSeed,
         uint8 participantSeed,
         bytes32 signerSeed,
@@ -104,10 +105,29 @@ contract ConversationEvidenceRegistryFuzzTest {
         ConversationEvidenceRegistry.Evidence memory evidence = _evidence(participants, nonce, signerSeed);
         bytes[] memory signatures = _signaturesFor(evidence, participants, privateKeys);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(ConversationEvidenceRegistry.ParticipantNotVerified.selector, participants[target])
-        );
-        registry.recordEvidence(evidence, participants, signatures);
+        bytes32 evidenceId = registry.recordEvidence(evidence, participants, signatures);
+
+        bool[] memory verified = registry.getEvidence(evidenceId).participantsVerified;
+        require(verified.length == count, "verified flag length mismatch");
+        for (uint256 i; i < count; ++i) {
+            require(verified[i] == (i != target), "verified flag mismatch");
+        }
+    }
+
+    /// @notice A conversation with no verified participant records at any participant count.
+    function testFuzz_recordsWhenNoParticipantIsVerified(uint8 countSeed, bytes32 signerSeed, bytes32 nonce) public {
+        uint256 count = _participantCount(countSeed);
+        (address[] memory participants, uint256[] memory privateKeys) = _sortedSigners(signerSeed, count);
+        ConversationEvidenceRegistry.Evidence memory evidence = _evidence(participants, nonce, signerSeed);
+        bytes[] memory signatures = _signaturesFor(evidence, participants, privateKeys);
+
+        bytes32 evidenceId = registry.recordEvidence(evidence, participants, signatures);
+
+        bool[] memory verified = registry.getEvidence(evidenceId).participantsVerified;
+        require(verified.length == count, "verified flag length mismatch");
+        for (uint256 i; i < count; ++i) {
+            require(!verified[i], "unverified participant flagged as verified");
+        }
     }
 
     function testFuzz_rejectsAnyAdjacentParticipantSwap(
@@ -185,6 +205,7 @@ contract ConversationEvidenceRegistryFuzzTest {
         _assertEq(record.contentHash, evidence.contentHash, "content hash mismatch");
         _assertEq(record.participantsHash, evidence.participantsHash, "participants hash mismatch");
         _assertEq(record.participants, participants);
+        _assertAllVerified(record.participantsVerified, count);
         _assertEq(record.messageCount, evidence.messageCount, "message count mismatch");
         _assertEq(record.startedAt, evidence.startedAt, "startedAt mismatch");
         _assertEq(record.endedAt, evidence.endedAt, "endedAt mismatch");
@@ -288,6 +309,13 @@ contract ConversationEvidenceRegistryFuzzTest {
 
     function _assertEq(uint256 actual, uint256 expected, string memory message) private pure {
         require(actual == expected, message);
+    }
+
+    function _assertAllVerified(bool[] memory verified, uint256 count) private pure {
+        require(verified.length == count, "verified flag length mismatch");
+        for (uint256 i; i < count; ++i) {
+            require(verified[i], "verified participant flagged as unverified");
+        }
     }
 
     function _assertEq(address[] memory actual, address[] memory expected) private pure {

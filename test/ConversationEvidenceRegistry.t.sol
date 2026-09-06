@@ -3,6 +3,9 @@ pragma solidity ^0.8.28;
 
 import {ConversationEvidenceRegistry} from "../src/ConversationEvidenceRegistry.sol";
 import {MockDojangScroll} from "./mocks/MockDojangScroll.sol";
+import {RawWordDojangScroll} from "./mocks/RawWordDojangScroll.sol";
+import {ReturnBombDojangScroll} from "./mocks/ReturnBombDojangScroll.sol";
+import {RevertingDojangScroll} from "./mocks/RevertingDojangScroll.sol";
 
 interface Vm {
     function addr(uint256 privateKey) external returns (address);
@@ -20,6 +23,7 @@ contract ConversationEvidenceRegistryTest {
         bytes32 indexed contentHash,
         bytes32 participantsHash,
         address[] participants,
+        bool[] participantsVerified,
         uint32 messageCount,
         uint64 startedAt,
         uint64 endedAt,
@@ -38,6 +42,7 @@ contract ConversationEvidenceRegistryTest {
     MockDojangScroll private dojang;
     ConversationEvidenceRegistry private registry;
     mapping(address participant => uint256 privateKey) private privateKeys;
+    mapping(bytes32 evidenceId => ConversationEvidenceRegistry registry) private registryFor;
 
     function setUp() public {
         vm.warp(1_000_000);
@@ -117,6 +122,7 @@ contract ConversationEvidenceRegistryTest {
             evidence.contentHash,
             evidence.participantsHash,
             participants,
+            _flags(true, true),
             evidence.messageCount,
             evidence.startedAt,
             evidence.endedAt,
@@ -134,6 +140,7 @@ contract ConversationEvidenceRegistryTest {
         _assertEq(record.contentHash, evidence.contentHash);
         _assertEq(record.participantsHash, evidence.participantsHash);
         _assertEq(record.participants, participants);
+        _assertEq(record.participantsVerified, _flags(true, true));
         _assertEq(record.messageCount, evidence.messageCount);
         _assertEq(record.startedAt, evidence.startedAt);
         _assertEq(record.endedAt, evidence.endedAt);
@@ -186,17 +193,93 @@ contract ConversationEvidenceRegistryTest {
         registry.recordEvidence(evidence, participants, signatures);
     }
 
-    function test_recordEvidence_rejectsUnverifiedParticipant() public {
+    /// @notice Records even with an unverified participant, flagging the status instead.
+    function test_recordEvidence_recordsUnverifiedParticipantAsFalseFlag() public {
         address[] memory participants = _sortedParticipants(2);
         dojang.setVerified(participants[0], ATTESTER_ID, true);
         ConversationEvidenceRegistry.Evidence memory evidence =
             _validEvidence(participants, keccak256("nonce-unverified"));
         bytes[] memory signatures = _signaturesFor(evidence, participants);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(ConversationEvidenceRegistry.ParticipantNotVerified.selector, participants[1])
-        );
-        registry.recordEvidence(evidence, participants, signatures);
+        bytes32 evidenceId = registry.recordEvidence(evidence, participants, signatures);
+
+        ConversationEvidenceRegistry.EvidenceRecord memory record = registry.getEvidence(evidenceId);
+        _assertEq(record.participants, participants);
+        _assertEq(record.participantsVerified, _flags(true, false));
+    }
+
+    /// @notice A conversation where nobody is verified is recorded all the same.
+    function test_recordEvidence_recordsWhenNoParticipantIsVerified() public {
+        address[] memory participants = _sortedParticipants(2);
+        ConversationEvidenceRegistry.Evidence memory evidence =
+            _validEvidence(participants, keccak256("nonce-none-verified"));
+        bytes[] memory signatures = _signaturesFor(evidence, participants);
+
+        bytes32 evidenceId = registry.recordEvidence(evidence, participants, signatures);
+
+        _assertEq(registry.getEvidence(evidenceId).participantsVerified, _flags(false, false));
+    }
+
+    /// @notice A non-canonical `true` still reads as verified rather than reverting.
+    /// @dev The boolean ABI decoder reverts on a word that is neither 0 nor 1, so decoding
+    ///      the answer as `bool` would revert `recordEvidence` itself and undo the whole
+    ///      point of reading the scroll through a raw staticcall.
+    function test_recordEvidence_readsDirtyBooleanWordAsVerified() public {
+        bytes32 evidenceId =
+            _recordAgainstScroll(address(new RawWordDojangScroll(abi.encode(uint256(2)))), "nonce-scroll-dirty");
+
+        _assertEq(_registryFor(evidenceId).getEvidence(evidenceId).participantsVerified, _flags(true, true));
+    }
+
+    /// @notice A zero word is the only word that means unverified.
+    function test_recordEvidence_readsZeroWordAsUnverified() public {
+        bytes32 evidenceId =
+            _recordAgainstScroll(address(new RawWordDojangScroll(abi.encode(uint256(0)))), "nonce-scroll-zero");
+
+        _assertEq(_registryFor(evidenceId).getEvidence(evidenceId).participantsVerified, _flags(false, false));
+    }
+
+    /// @notice A short answer is not an answer. Nothing reverts, nothing is verified.
+    function test_recordEvidence_recordsWhenDojangReturnsShortData() public {
+        bytes32 evidenceId = _recordAgainstScroll(address(new RawWordDojangScroll(hex"deadbeef")), "nonce-scroll-short");
+
+        _assertEq(_registryFor(evidenceId).getEvidence(evidenceId).participantsVerified, _flags(false, false));
+    }
+
+    /// @notice A scroll flooding the return buffer cannot grief the caller's memory.
+    /// @dev Taking the answer into a `bytes memory` would copy all of it and pay quadratic
+    ///      memory expansion for the privilege. The 32-byte output window never copies more
+    ///      than a word, so what is left is the callee's own expansion.
+    function test_recordEvidence_recordsWhenDojangFloodsReturnData() public {
+        bytes32 evidenceId = _recordAgainstScroll(address(new ReturnBombDojangScroll(3_000_000)), "nonce-scroll-bomb");
+
+        _assertEq(_registryFor(evidenceId).getEvidence(evidenceId).participantsVerified, _flags(false, false));
+    }
+
+    /// @notice Evidence survives a failing Dojang lookup; only the signal is lost.
+    function test_recordEvidence_recordsWhenDojangLookupReverts() public {
+        ConversationEvidenceRegistry unreadable =
+            new ConversationEvidenceRegistry(address(new RevertingDojangScroll()), ATTESTER_ID);
+        address[] memory participants = _sortedParticipants(2);
+        ConversationEvidenceRegistry.Evidence memory evidence = ConversationEvidenceRegistry.Evidence({
+            conversationHash: keccak256("conversation"),
+            contentHash: keccak256("content"),
+            participantsHash: unreadable.hashParticipants(participants),
+            messageCount: 3,
+            startedAt: uint64(block.timestamp - 100),
+            endedAt: uint64(block.timestamp - 1),
+            nonce: keccak256("nonce-scroll-down"),
+            deadline: uint64(block.timestamp + 1 days)
+        });
+        bytes32 digest = unreadable.hashEvidence(evidence);
+        bytes[] memory signatures = new bytes[](2);
+        for (uint256 i; i < participants.length; ++i) {
+            signatures[i] = _sign(privateKeys[participants[i]], digest);
+        }
+
+        bytes32 evidenceId = unreadable.recordEvidence(evidence, participants, signatures);
+
+        _assertEq(unreadable.getEvidence(evidenceId).participantsVerified, _flags(false, false));
     }
 
     function test_recordEvidence_rejectsDuplicateParticipant() public {
@@ -375,6 +458,35 @@ contract ConversationEvidenceRegistryTest {
         registry.getEvidence(unknownId);
     }
 
+    /// @dev Records one evidence against a registry wired to `scroll`, and remembers that
+    ///      registry so the caller can read the record back by id.
+    function _recordAgainstScroll(address scroll, bytes32 nonce) private returns (bytes32 evidenceId) {
+        ConversationEvidenceRegistry target = new ConversationEvidenceRegistry(scroll, ATTESTER_ID);
+        address[] memory participants = _sortedParticipants(2);
+        ConversationEvidenceRegistry.Evidence memory evidence = ConversationEvidenceRegistry.Evidence({
+            conversationHash: keccak256("conversation"),
+            contentHash: keccak256("content"),
+            participantsHash: target.hashParticipants(participants),
+            messageCount: 3,
+            startedAt: uint64(block.timestamp - 100),
+            endedAt: uint64(block.timestamp - 1),
+            nonce: nonce,
+            deadline: uint64(block.timestamp + 1 days)
+        });
+        bytes32 digest = target.hashEvidence(evidence);
+        bytes[] memory signatures = new bytes[](participants.length);
+        for (uint256 i; i < participants.length; ++i) {
+            signatures[i] = _sign(privateKeys[participants[i]], digest);
+        }
+
+        evidenceId = target.recordEvidence(evidence, participants, signatures);
+        registryFor[evidenceId] = target;
+    }
+
+    function _registryFor(bytes32 evidenceId) private view returns (ConversationEvidenceRegistry) {
+        return registryFor[evidenceId];
+    }
+
     function _validEvidence(address[] memory participants, bytes32 nonce)
         private
         view
@@ -434,6 +546,12 @@ contract ConversationEvidenceRegistryTest {
         }
     }
 
+    function _flags(bool first, bool second) private pure returns (bool[] memory flags) {
+        flags = new bool[](2);
+        flags[0] = first;
+        flags[1] = second;
+    }
+
     function _assertTrue(bool value) private pure {
         require(value, "assert true failed");
     }
@@ -454,6 +572,13 @@ contract ConversationEvidenceRegistryTest {
         require(actual.length == expected.length, "address array length mismatch");
         for (uint256 i; i < actual.length; ++i) {
             require(actual[i] == expected[i], "address array item mismatch");
+        }
+    }
+
+    function _assertEq(bool[] memory actual, bool[] memory expected) private pure {
+        require(actual.length == expected.length, "bool array length mismatch");
+        for (uint256 i; i < actual.length; ++i) {
+            require(actual[i] == expected[i], "bool array item mismatch");
         }
     }
 }
