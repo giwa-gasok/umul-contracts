@@ -24,6 +24,8 @@ contract ConversationEvidenceRegistry {
         bytes32 conversationHash;
         bytes32 participantsHash;
         address[] participants;
+        /// @dev Dojang verification, in the same order as `participants`.
+        bool[] participantsVerified;
         uint32 messageCount;
         uint64 startedAt;
         uint64 endedAt;
@@ -37,7 +39,6 @@ contract ConversationEvidenceRegistry {
     error EvidenceNotFound(bytes32 evidenceId);
     error InvalidSignature(address participant);
     error InvalidTimeRange(uint64 startedAt, uint64 endedAt);
-    error ParticipantNotVerified(address participant);
     error ParticipantsHashMismatch(bytes32 expected, bytes32 actual);
     error ParticipantsNotSorted(address previous, address current);
     error SignatureCountMismatch(uint256 participantCount, uint256 signatureCount);
@@ -56,6 +57,7 @@ contract ConversationEvidenceRegistry {
         bytes32 indexed contentHash,
         bytes32 participantsHash,
         address[] participants,
+        bool[] participantsVerified,
         uint32 messageCount,
         uint64 startedAt,
         uint64 endedAt,
@@ -91,10 +93,13 @@ contract ConversationEvidenceRegistry {
         attesterId = dojangAttesterId;
     }
 
-    /// @notice Records evidence after every sorted, verified participant has signed it.
+    /// @notice Records evidence after every sorted participant has signed it.
     /// @dev `evidenceId = keccak256(abi.encode(typedDataDigest, evidence.nonce))`.
     ///      The digest already commits to the nonce; including it again makes the ID
     ///      derivation and replay boundary explicit.
+    ///      Dojang verification does not gate recording. The status read at submission
+    ///      time is stored and emitted per participant, so a conversation containing
+    ///      unverified wallets is still recorded as evidence.
     function recordEvidence(Evidence calldata evidence, address[] calldata participants, bytes[] calldata signatures)
         external
         returns (bytes32 evidenceId)
@@ -110,21 +115,52 @@ contract ConversationEvidenceRegistry {
         evidenceId = keccak256(abi.encode(digest, evidence.nonce));
         if (evidenceExists[evidenceId]) revert EvidenceAlreadyRecorded(evidenceId);
 
+        bool[] memory participantsVerified = new bool[](participants.length);
         for (uint256 i; i < participants.length; ++i) {
             address participant = participants[i];
-            if (!dojangScroll.isVerified(participant, attesterId)) {
-                revert ParticipantNotVerified(participant);
-            }
             if (_recover(digest, signatures[i]) != participant) {
                 revert InvalidSignature(participant);
             }
+            participantsVerified[i] = _isVerified(participant);
         }
 
         evidenceExists[evidenceId] = true;
-        _storeAndEmit(evidenceId, evidence, participants);
+        _storeAndEmit(evidenceId, evidence, participants, participantsVerified);
     }
 
-    function _storeAndEmit(bytes32 evidenceId, Evidence calldata evidence, address[] calldata participants) private {
+    /// @dev Reads the scroll without letting it take `recordEvidence` down with it, so that
+    ///      verification stays an attribute of the record rather than a condition for it.
+    ///      Written in assembly for two reasons a high-level call cannot cover:
+    ///      - `.staticcall` returning `bytes memory` copies the whole return payload, so a
+    ///        scroll answering with megabytes griefs the caller through quadratic memory
+    ///        expansion. A fixed 32-byte output window never copies more than a word.
+    ///      - The `bool` ABI decoder reverts on a word that is neither 0 nor 1, so a scroll
+    ///        that drifted to an enum or a count would revert the whole transaction.
+    ///      A short answer, a revert, and a zero word all read as unverified. Every other
+    ///      word reads as verified: a scroll answering with a non-canonical boolean is
+    ///      tolerated rather than dismissed. This is a deliberate choice, not an oversight —
+    ///      it trades a wrong `true` should the interface ever drift to an enum against a
+    ///      wrong `false` for an implementation that returns an unclean word.
+    /// @dev Callee-side memory expansion is still charged to this transaction because the
+    ///      call forwards the remaining gas. Capping it would bound that too, at the cost of
+    ///      silently under-reporting whenever the scroll legitimately needs more.
+    function _isVerified(address participant) private view returns (bool verified) {
+        bytes memory payload = abi.encodeCall(IDojangScroll.isVerified, (participant, attesterId));
+        address scroll = address(dojangScroll);
+        assembly ("memory-safe") {
+            let out := mload(0x40)
+            mstore(out, 0)
+            let ok := staticcall(gas(), scroll, add(payload, 0x20), mload(payload), out, 0x20)
+            verified := and(ok, and(eq(returndatasize(), 0x20), iszero(iszero(mload(out)))))
+        }
+    }
+
+    function _storeAndEmit(
+        bytes32 evidenceId,
+        Evidence calldata evidence,
+        address[] calldata participants,
+        bool[] memory participantsVerified
+    ) private {
         uint64 recordedAt = uint64(block.timestamp);
         EvidenceRecord storage record = _evidenceRecords[evidenceId];
         record.evidenceId = evidenceId;
@@ -132,6 +168,7 @@ contract ConversationEvidenceRegistry {
         record.conversationHash = evidence.conversationHash;
         record.participantsHash = evidence.participantsHash;
         record.participants = participants;
+        record.participantsVerified = participantsVerified;
         record.messageCount = evidence.messageCount;
         record.startedAt = evidence.startedAt;
         record.endedAt = evidence.endedAt;
@@ -144,6 +181,7 @@ contract ConversationEvidenceRegistry {
             evidence.contentHash,
             evidence.participantsHash,
             participants,
+            participantsVerified,
             evidence.messageCount,
             evidence.startedAt,
             evidence.endedAt,
