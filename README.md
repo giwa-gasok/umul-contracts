@@ -11,17 +11,20 @@ GIWA Sepolia 에 기록한다. 대화 원문은 어디에도 저장하지 않는
 | 항목 | 값 |
 | --- | --- |
 | 네트워크 | GIWA Sepolia (chain ID 91342) |
-| 주소 | `0x675dB91aCEC52DCb44e6d20FB1F1299FFafBb51B` |
+| 주소 | `0x6ffa0a783C722d1Ce4e16a9bb53162EE44626DAC` |
 | DojangScroll | `0xd5077b67dcb56caC8b270C7788FC3E6ee03F17B9` |
 | attester | TESTNET_FAUCET |
 | 소스 검증 | Blockscout 완료 |
 
 배포 산출물 전문은 `deployments/giwa-sepolia.json` 에 있다.
 
-> 위 주소에 올라간 코드는 참여자 전원의 Dojang 인증을 **강제하던** 버전이다.
-> 현재 `src/` 는 인증을 기록만 하고 막지 않으므로, 반영하려면 재배포해야 한다.
-> EIP-712 도메인에 컨트랙트 주소가 들어가므로 재배포하면 그전에 모아둔 서명은
-> 모두 무효가 된다.
+이전 배포본 `0x675dB91aCEC52DCb44e6d20FB1F1299FFafBb51B` 은 참여자 전원의 Dojang
+인증을 강제하던 버전이다. 그 주소에 남은 기록은 전원 인증된 경우만 존재하지만,
+새 주소의 기록은 `participantsVerified` 를 봐야 알 수 있다. 두 주소를 함께
+조회한다면 이 차이를 드러내야 한다.
+
+EIP-712 도메인에 컨트랙트 주소가 들어가므로 옛 주소로 모은 서명은 새 주소에서
+무효다.
 
 ## 동작
 
